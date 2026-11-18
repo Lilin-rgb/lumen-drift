@@ -11,8 +11,8 @@ You are a lone pilot drifting in a neon arena. Enemies come in waves; collect
 the light dust they drop, level up, and choose upgrades to survive. Defeat
 **the Abyss Maw** on wave 10 to win.
 
-![Title screen](screenshots/1-start.jpg)
-![Mid-fight](screenshots/2-play.jpg)
+![Boss fight — wave 10](screenshots/1-boss-fight.jpg)
+![Title screen](screenshots/2-start.jpg)
 
 ## How to play
 
@@ -76,7 +76,9 @@ screenshots/         4 real renders of the game (1280x800 JPEG)
 ## Deterministic screenshots
 
 The four screenshots are real renders of the game's own code, staged by
-`game/src/shots.js` with a fixed seed:
+`game/src/shots.js` with a fixed seed. The combat shot is the wave-10 boss
+fight, staged by playing a full game with the autopilot; it sorts first so
+it is the cover. The victory shot shows the true clear time of that run.
 
 ```sh
 node serve.ts

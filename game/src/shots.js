@@ -3,14 +3,13 @@
 // autopilot, so the frame is what a short game really looks like and the same
 // seed always gives the same frame.
 import { WAVE } from './config.js';
-import { resetWorld, step, damageEnemy, PHASE } from './world.js';
+import { resetWorld, step, applyLevelUp, PHASE } from './world.js';
 import { rollUpgradeChoices, applyUpgrade } from './player.js';
 
 const STEP = 1 / 60;
 const START_SECONDS = 6;
 const PLAY_SECONDS = 16;
 const LEVELUP_LIMIT_SECONDS = 60;
-const BOSS_FIGHT_SECONDS = 12;
 
 // A simple autopilot that plays like a cautious beginner: aim at the nearest
 // enemy, keep some distance, drift toward the nearest light dust.
@@ -87,6 +86,43 @@ function runFor(world, seconds, pilot, stopWhen) {
   }
 }
 
+// Play a real game with the autopilot, applying its level-ups the way
+// attract mode does (first rolled card), and stop early when `stopWhen`
+// fires, on victory/defeat, or after `maxSeconds` of game time. Every
+// number on the HUD after this is the true state of that run.
+function runGame(world, pilot, stopWhen, maxSeconds) {
+  const maxSteps = Math.floor((maxSeconds || 400) / STEP);
+  for (let i = 0; i < maxSteps; i += 1) {
+    pilot.update();
+    step(world, pilot, STEP, SILENT_AUDIO);
+    while (world.pendingLevels > 0) {
+      const demoChoices = rollUpgradeChoices(world.rng, world.player);
+      if (demoChoices.length === 0) break;
+      applyLevelUp(world, demoChoices[0].id, SILENT_AUDIO);
+    }
+    if (world.phase === PHASE.OVER || world.phase === PHASE.VICTORY) break;
+    if (stopWhen && stopWhen(world)) break;
+  }
+}
+
+// A dense boss fight: the Maw alive, its radial bursts in flight, and
+// summoned chasers on screen.
+function denseBossFight(world) {
+  return world.wave === WAVE.bossWave
+    && world.phase === PHASE.FIGHTING
+    && world.enemies.some((e) => e.kind === 'boss')
+    && world.ebullets.length >= 12
+    && world.enemies.length >= 3;
+}
+
+// The boss fight is still on: wave 10, fighting, Maw alive. Checked after
+// the bloom, when the bullet count may have dipped below the staging bar.
+function bossFightOn(world) {
+  return world.wave === WAVE.bossWave
+    && world.phase === PHASE.FIGHTING
+    && world.enemies.some((e) => e.kind === 'boss');
+}
+
 /**
  * Set `world` to the named scene and return the screen to draw over it, the
  * level-up choices (for the levelup scene), and the best score to show.
@@ -96,13 +132,31 @@ export function stageShot(name, world) {
   const pilot = createAutopilot(world);
 
   if (name === 'play') {
-    runFor(world, PLAY_SECONDS, pilot);
-    if (world.phase === PHASE.OVER) {
-      // The pilot died; re-stage a shorter, safer play scene.
+    // Stage the wave-10 boss fight for real: play a full game with the
+    // autopilot and stop mid-fight once the Maw's radial bursts and summoned
+    // chasers fill the screen. The HUD then shows the true wave, timer and
+    // score of that run.
+    for (const seed of [world.seed, 2, 3, 4, 5, 6, 7, 8]) {
+      resetWorld(world, seed);
+      runGame(world, pilot, denseBossFight, 400);
+      if (denseBossFight(world)) break;
+    }
+    if (denseBossFight(world)) {
+      // Let the newest radial burst travel clear of the Maw's glow so the
+      // ring reads on the frame instead of hiding inside the boss sprite.
+      // The boss has roughly half its hull left here, so it survives this.
+      runFor(world, 1.0, pilot);
+    }
+    if (!bossFightOn(world)) {
+      // Last resort: the short early fight the old staging used.
       resetWorld(world, world.seed);
-      applyUpgrade(world.player, 'vitality');
-      applyUpgrade(world.player, 'damage');
-      runFor(world, 14, pilot);
+      runFor(world, PLAY_SECONDS, pilot);
+      if (world.phase === PHASE.OVER) {
+        resetWorld(world, world.seed);
+        applyUpgrade(world.player, 'vitality');
+        applyUpgrade(world.player, 'damage');
+        runFor(world, 14, pilot);
+      }
     }
     return { screen: 'play', best: 0 };
   }
@@ -124,27 +178,22 @@ export function stageShot(name, world) {
   }
 
   if (name === 'end') {
-    // Stage the victory the real way: jump to wave 10, let the Maw spawn,
-    // fight it for real with a boosted loadout, then land the finishing blow
-    // through the real damage path so the victory flow fires.
-    applyUpgrade(world.player, 'damage');
-    applyUpgrade(world.player, 'damage');
-    applyUpgrade(world.player, 'damage');
-    applyUpgrade(world.player, 'firerate');
-    applyUpgrade(world.player, 'firerate');
-    applyUpgrade(world.player, 'vitality');
-    world.wave = WAVE.bossWave - 1;
-    // Re-enter the wave machine at wave 10.
-    world.phase = 'clear';
-    world.phaseT = 99;
-    runFor(world, 4, pilot);
-    runFor(world, BOSS_FIGHT_SECONDS, pilot);
-    const boss = world.enemies.find((e) => e.kind === 'boss');
-    if (boss) {
-      while (boss.hp > 0) damageEnemy(world, boss, 400, 0, -1);
+    // Stage the victory the real way: play a full game with the autopilot
+    // and its level-ups, so the victory screen shows the true clear time.
+    // Seed 1 clears in about 156 s; the other seeds are fallbacks.
+    // A faked timer is never substituted: if no seed clears, fail loudly.
+    for (const seed of [world.seed, 2, 3, 4, 5, 6, 7, 8]) {
+      resetWorld(world, seed);
+      runGame(world, pilot, (w) => w.phase === PHASE.VICTORY, 400);
+      if (world.phase === PHASE.VICTORY) break;
     }
-    runFor(world, 1.2, pilot);
-    return { screen: world.phase === PHASE.VICTORY ? 'victory' : 'play', best: world.score };
+    if (world.phase !== PHASE.VICTORY) {
+      throw new Error('stageShot(end): no seed cleared the game');
+    }
+    // Let the boss-death burst bloom behind the victory screen. The timer
+    // is frozen in the victory phase, so the clear time stays true.
+    runFor(world, 1.5, pilot);
+    return { screen: 'victory', best: world.score };
   }
 
   // Default: start — a few seconds of attract mode behind the title.
